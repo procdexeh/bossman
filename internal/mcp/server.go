@@ -14,6 +14,7 @@ import (
 type ToolHandler interface {
 	ListTools() []ToolDefinition
 	CallTool(ctx context.Context, name string, args json.RawMessage) (*ToolResult, error)
+	HasTool(name string) bool
 }
 
 // Server implements the MCP lifecycle over stdio.
@@ -85,6 +86,15 @@ func (s *Server) handleToolsCall(req Request) *Response {
 	s.mu.Lock()
 	s.inflight[key] = cancel
 	s.mu.Unlock()
+
+	if !s.handler.HasTool(params.Name) {
+		cancel()
+		s.mu.Lock()
+		delete(s.inflight, key)
+		s.mu.Unlock()
+		r := NewErrorResponse(req.ID, NewInvalidParams("unknown tool: "+params.Name))
+		return &r
+	}
 
 	result, err := s.handler.CallTool(ctx, params.Name, params.Arguments)
 
