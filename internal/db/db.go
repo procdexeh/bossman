@@ -1,18 +1,13 @@
-package main
+package db
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
-	"net/http"
-	"os"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rs/xid"
 	_ "modernc.org/sqlite"
 )
-
-var db *sqlx.DB
 
 type Task struct {
 	ID          string  `db:"id"`
@@ -28,15 +23,8 @@ type Task struct {
 	UpdatedAt   string  `db:"updated_at"`
 }
 
-func initDB(path string) error {
-	var err error
-	db, err = sqlx.Connect("sqlite", path)
-	if err != nil {
-		return err
-	}
-	_, err = db.ExecContext(
-		context.Background(),
-		`CREATE TABLE IF NOT EXISTS tasks (
+const schema = `
+CREATE TABLE IF NOT EXISTS tasks (
     id          TEXT PRIMARY KEY,
     parent_id   TEXT REFERENCES tasks(id),
     description TEXT NOT NULL,
@@ -62,12 +50,27 @@ CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
 CREATE INDEX IF NOT EXISTS idx_task_blockers_task ON task_blockers(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_blockers_blocked_by ON task_blockers(blocked_by_id);
-`)
-	return err
+`
+
+func InitDB(path string) (*sqlx.DB, error) {
+	conn, err := sqlx.Connect("sqlite", path)
+	if err != nil {
+		return nil, err
+	}
+	_, err = conn.ExecContext(context.Background(), schema)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
-func InsertTask(t *Task) error {
-	_, err := db.NamedExecContext(
+func NewTaskID() string {
+	return "task_" + xid.New().String()
+}
+
+func InsertTask(conn *sqlx.DB, t *Task) error {
+	_, err := conn.NamedExecContext(
 		context.Background(),
 		`INSERT INTO tasks (id, description) VALUES (:id, :description)`,
 		t,
@@ -76,56 +79,8 @@ func InsertTask(t *Task) error {
 	return err
 }
 
-func QueryTasks() ([]Task, error) {
+func QueryTasks(conn *sqlx.DB) ([]Task, error) {
 	var tasks []Task
-	err := db.SelectContext(context.Background(), &tasks, `SELECT * FROM tasks`)
+	err := conn.SelectContext(context.Background(), &tasks, `SELECT * FROM tasks`)
 	return tasks, err
-}
-
-const PORT = ":6969"
-
-func main() {
-	id := 1
-
-	err := initDB("./bossman.db")
-	if err != nil {
-		slog.Error("DATABASE INIT ERROR", slog.Any("error", err))
-		os.Exit(1)
-	}
-
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("HELLO HTTP SERVER")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "hello")
-	})
-
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("HEALTH CHECK", "FROM", r.RemoteAddr)
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ok")
-	})
-
-	http.HandleFunc("POST /task", func(w http.ResponseWriter, r *http.Request) {
-		task := &Task{
-			ID:          "task_" + xid.New().String(),
-			Description: r.RemoteAddr,
-		}
-		err := InsertTask(task)
-		if err != nil {
-			slog.Error("HTTP SERVER ERROR", slog.Any("error", err))
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprint(w, "internal server error.")
-			return
-		}
-		id++
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ok")
-	})
-
-	slog.Info("LISTENING ON", "PORT", PORT)
-	err = http.ListenAndServe(PORT, nil)
-	if err != nil {
-		slog.Error("HTTP SERVER ERROR", slog.Any("error", err))
-		os.Exit(1)
-	}
 }
